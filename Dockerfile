@@ -21,10 +21,10 @@ WORKDIR /app/packages/tracker
 RUN yarn install && yarn build
 
 # 暴露 3000 端口，供 API 或 Worker 访问
-EXPOSE 3000
+EXPOSE 3001
 
 # 添加数据库迁移命令
-RUN yarn migration:run
+# RUN yarn migration:run
 
 # 默认启动 worker 的生产环境
 CMD ["yarn", "start:worker:prod"]

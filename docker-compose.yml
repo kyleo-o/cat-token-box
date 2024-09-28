@@ -1,0 +1,21 @@
+version: '3'
+services:
+  worker:
+    build: .
+    container_name: cat_token_box_worker
+    environment:
+      - TIME_ZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+    command: yarn start:worker:prod
+    ports:
+      - "3001:3001"  # 如果 worker 需要开放端口，可以暴露另一个端口
+
+  api:
+    build: .
+    container_name: cat_token_box_api
+    environment:
+      - TIME_ZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+    command: yarn start:api:prod
+    ports:
+      - "6565:6565"  # 暴露 API 服务的端口
