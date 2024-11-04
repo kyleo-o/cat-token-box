@@ -29,6 +29,7 @@ import { calcTotalAmount, sendToken } from '../send/ft';
 import { pickLargeFeeUtxo } from '../send/pick';
 interface MintCommandOptions extends BoardcastCommandOptions {
   id: string;
+  merge: boolean;
   new?: number;
 }
 
@@ -66,6 +67,10 @@ export class MintCommand extends BoardcastCommand {
           return;
         }
 
+        if (!isOpenMinter(token.info.minterMd5)) {
+          throw new Error('unkown minter!');
+        }
+
         const scaledInfo = scaleConfig(token.info as OpenMinterTokenInfo);
 
         let amount: bigint | undefined;
@@ -85,7 +90,9 @@ export class MintCommand extends BoardcastCommand {
         const MAX_RETRY_COUNT = 10;
 
         for (let index = 0; index < MAX_RETRY_COUNT; index++) {
-          await this.merge(token, address);
+          if (options.merge) {
+            await this.merge(token, address);
+          }
           const feeRate = await this.getFeeRate();
           const feeUtxos = await this.getFeeUTXOs(address);
           if (feeUtxos.length === 0) {
@@ -117,88 +124,83 @@ export class MintCommand extends BoardcastCommand {
             continue;
           }
 
-          if (isOpenMinter(token.info.minterMd5)) {
-            const minterState = minter.state.data;
-            if (minterState.isPremined && amount > scaledInfo.limit) {
-              console.error('The number of minted tokens exceeds the limit!');
-              return;
-            }
+          const minterState = minter.state.data;
+          if (minterState.isPremined && amount > scaledInfo.limit) {
+            console.error('The number of minted tokens exceeds the limit!');
+            return;
+          }
 
-            const limit = scaledInfo.limit;
+          const limit = scaledInfo.limit;
 
-            if (!minter.state.data.isPremined && scaledInfo.premine > 0n) {
-              if (typeof amount === 'bigint') {
-                if (amount !== scaledInfo.premine) {
-                  throw new Error(
-                    `first mint amount should equal to premine ${scaledInfo.premine}`,
-                  );
-                }
-              } else {
-                amount = scaledInfo.premine;
+          if (!minter.state.data.isPremined && scaledInfo.premine > 0n) {
+            if (typeof amount === 'bigint') {
+              if (amount !== scaledInfo.premine) {
+                throw new Error(
+                  `first mint amount should equal to premine ${scaledInfo.premine}`,
+                );
               }
             } else {
-              amount = amount || limit;
-              if (token.info.minterMd5 === MinterType.OPEN_MINTER_V1) {
-                if (
-                  getRemainSupply(minter.state.data, token.info.minterMd5) <
-                  limit
-                ) {
-                  console.warn(
-                    `small limit of ${unScaleByDecimals(limit, token.info.decimals)} in the minter UTXO!`,
-                  );
-                  log(`retry to mint token [${token.info.symbol}] ...`);
-                  continue;
-                }
-                amount =
-                  amount >
-                  getRemainSupply(minter.state.data, token.info.minterMd5)
-                    ? getRemainSupply(minter.state.data, token.info.minterMd5)
-                    : amount;
-              } else if (
-                token.info.minterMd5 == MinterType.OPEN_MINTER_V2 &&
-                amount != limit
+              amount = scaledInfo.premine;
+            }
+          } else {
+            amount = amount || limit;
+            if (token.info.minterMd5 === MinterType.OPEN_MINTER_V1) {
+              if (
+                getRemainSupply(minter.state.data, token.info.minterMd5) < limit
               ) {
                 console.warn(
-                  `can only mint at the exactly amount of ${limit} at once`,
+                  `small limit of ${unScaleByDecimals(limit, token.info.decimals)} in the minter UTXO!`,
                 );
-                amount = limit;
-              }
-            }
-
-            const mintTxIdOrErr = await openMint(
-              this.configService,
-              this.walletService,
-              this.spendService,
-              feeRate,
-              feeUtxos,
-              token,
-              2,
-              minter,
-              amount,
-            );
-
-            if (mintTxIdOrErr instanceof Error) {
-              if (needRetry(mintTxIdOrErr)) {
-                // throw these error, so the caller can handle it.
                 log(`retry to mint token [${token.info.symbol}] ...`);
-                await sleep(6);
                 continue;
-              } else {
-                logerror(
-                  `mint token [${token.info.symbol}] failed`,
-                  mintTxIdOrErr,
-                );
-                return;
               }
+              amount =
+                amount >
+                getRemainSupply(minter.state.data, token.info.minterMd5)
+                  ? getRemainSupply(minter.state.data, token.info.minterMd5)
+                  : amount;
+            } else if (
+              token.info.minterMd5 == MinterType.OPEN_MINTER_V2 &&
+              amount != limit
+            ) {
+              console.warn(
+                `can only mint at the exactly amount of ${limit} at once`,
+              );
+              amount = limit;
             }
-
-            console.log(
-              `Minting ${unScaleByDecimals(amount, token.info.decimals)} ${token.info.symbol} tokens in txid: ${mintTxIdOrErr} ...`,
-            );
-            return;
-          } else {
-            throw new Error('unkown minter!');
           }
+
+          const mintTxIdOrErr = await openMint(
+            this.configService,
+            this.walletService,
+            this.spendService,
+            feeRate,
+            feeUtxos,
+            token,
+            2,
+            minter,
+            amount,
+          );
+
+          if (mintTxIdOrErr instanceof Error) {
+            if (needRetry(mintTxIdOrErr)) {
+              // throw these error, so the caller can handle it.
+              log(`retry to mint token [${token.info.symbol}] ...`);
+              await sleep(6);
+              continue;
+            } else {
+              logerror(
+                `mint token [${token.info.symbol}] failed`,
+                mintTxIdOrErr,
+              );
+              return;
+            }
+          }
+
+          console.log(
+            `Minting ${unScaleByDecimals(amount, token.info.decimals)} ${token.info.symbol} tokens in txid: ${mintTxIdOrErr} ...`,
+          );
+          return;
         }
 
         console.error(`mint token [${token.info.symbol}] failed`);
@@ -284,6 +286,15 @@ export class MintCommand extends BoardcastCommand {
   })
   parseId(val: string): string {
     return val;
+  }
+  @Option({
+    flags: '-m, --merge [merge]',
+    defaultValue: false,
+    description: 'merge token utxos when mint',
+  })
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  parseMerge(val: string): boolean {
+    return true;
   }
 
   async getFeeUTXOs(address: btc.Address) {
